@@ -2,7 +2,7 @@
 # DISCOVER ENVIRONMENT VALUES  --  run this once, read the log
 # Prints every solution's UNIQUE NAME and every agent's Bot ID,
 # so you can fill in the EDIT lines of the other workflows.
-# Nothing is changed in the environment. No edits needed in this file.
+# Read-only: nothing in the environment is changed. No edits needed.
 # =====================================================================
 name: Discover solutions and agents
 
@@ -23,17 +23,28 @@ jobs:
           S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
           S_TID: ${{ secrets.PP_TENANT_ID }}
         run: |
-          pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
-                          --tenant $env:S_TID --environment $env:S_ENV
+          # actions-install does NOT put pac on PATH; it exports this variable.
+          $pac = $env:POWERPLATFORMTOOLS_PACPATH
+          if (-not $pac -or -not (Test-Path $pac)) {
+            $pac = (Get-ChildItem -Path $env:RUNNER_TEMP,$env:TEMP -Filter pac.exe -Recurse -ErrorAction SilentlyContinue |
+                    Select-Object -First 1).FullName
+          }
+          if (-not $pac) { Write-Error "Could not locate pac.exe on the runner." }
+          Write-Host "Using pac at: $pac"
+
+          & $pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
+                             --tenant $env:S_TID --environment $env:S_ENV
 
           Write-Host ""
           Write-Host "================ SOLUTIONS ================"
           Write-Host "Use the UNIQUE NAME column for EDIT 1 / EDIT 2."
           Write-Host ""
-          pac solution list
+          & $pac solution list
 
           Write-Host ""
           Write-Host "================ AGENTS ================"
           Write-Host "Use the Bot ID of your PROD agent for EDIT 5."
           Write-Host ""
-          pac copilot list
+          # Non-fatal: if this command group differs in your pac version,
+          # the solutions list above is still what you need.
+          try { & $pac copilot list } catch { Write-Host "copilot list unavailable: $_" }
