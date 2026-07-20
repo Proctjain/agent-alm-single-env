@@ -1,0 +1,39 @@
+# =====================================================================
+# DISCOVER ENVIRONMENT VALUES  --  run this once, read the log
+# Prints every solution's UNIQUE NAME and every agent's Bot ID,
+# so you can fill in the EDIT lines of the other workflows.
+# Nothing is changed in the environment. No edits needed in this file.
+# =====================================================================
+name: Discover solutions and agents
+
+on:
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: windows-latest
+    steps:
+      - uses: microsoft/powerplatform-actions/actions-install@v1
+
+      - name: Authenticate and list
+        shell: pwsh
+        env:
+          S_ENV: ${{ secrets.PP_ENV_URL }}
+          S_CID: ${{ secrets.PP_CLIENT_ID }}
+          S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
+          S_TID: ${{ secrets.PP_TENANT_ID }}
+        run: |
+          pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
+                          --tenant $env:S_TID --environment $env:S_ENV
+
+          Write-Host ""
+          Write-Host "================ SOLUTIONS ================"
+          Write-Host "Use the UNIQUE NAME column for EDIT 1 / EDIT 2."
+          Write-Host ""
+          pac solution list
+
+          Write-Host ""
+          Write-Host "================ AGENTS ================"
+          Write-Host "Use the Bot ID of your PROD agent for EDIT 5."
+          Write-Host ""
+          pac copilot list
