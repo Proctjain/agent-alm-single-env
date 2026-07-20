@@ -1,0 +1,222 @@
+# =====================================================================
+# PROMOTE DEV AGENT -> PROD AGENT  (single environment)
+# Manual trigger, gated by the "production" GitHub Environment.
+# Backs up prod, exports dev, rewrites dev identity -> prod identity,
+# safety-checks, imports onto the prod agent, publishes it.
+#
+#  >>> EDIT LINES 17, 21, 25, 29, 33  <<<
+# =====================================================================
+name: Promote dev agent to prod agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      dev_solution:
+        description: "Dev solution unique Name"
+        required: true
+        default: AgentDev                      # <<< EDIT 1: DEV solution Name
+      prod_solution:
+        description: "Prod solution unique Name"
+        required: true
+        default: AgentProd                     # <<< EDIT 2: PROD solution Name
+      dev_stem:
+        description: "Dev agent schema name"
+        required: true
+        default: con_contosoassistantdev       # <<< EDIT 3: DEV agent schema name
+      prod_stem:
+        description: "Prod agent schema name"
+        required: true
+        default: con_contosoassistant          # <<< EDIT 4: PROD agent schema name
+      prod_bot_id:
+        description: "Prod agent Bot ID (GUID)"
+        required: true
+        default: 33062c04-0384-f111-ab0f-7ced8daf5448   # <<< EDIT 5: PROD agent Bot ID
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: windows-latest
+    environment: production          # pauses here for your approval
+    env:
+      DEV_SOLUTION: ${{ github.event.inputs.dev_solution }}
+      PROD_SOLUTION: ${{ github.event.inputs.prod_solution }}
+      DEV_STEM: ${{ github.event.inputs.dev_stem }}
+      PROD_STEM: ${{ github.event.inputs.prod_stem }}
+      PROD_BOT_ID: ${{ github.event.inputs.prod_bot_id }}
+      MAP_FILE: identity-map-${{ github.event.inputs.prod_solution }}.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/powerplatform-actions/actions-install@v1
+
+      - name: Confirm connection (Who Am I)
+        uses: microsoft/powerplatform-actions/who-am-i@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+
+      - name: Export dev solution (source of truth)
+        uses: microsoft/powerplatform-actions/export-solution@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+          solution-name: ${{ env.DEV_SOLUTION }}
+          managed: false
+          solution-output-file: out/dev.zip
+
+      - name: Export prod solution (backup + mapping source)
+        uses: microsoft/powerplatform-actions/export-solution@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+          solution-name: ${{ env.PROD_SOLUTION }}
+          managed: false
+          solution-output-file: out/prod_backup.zip
+
+      - name: Save prod backup artifact (rollback point)
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-backup-run-${{ github.run_number }}
+          path: out/prod_backup.zip
+
+      - name: Unpack dev
+        uses: microsoft/powerplatform-actions/unpack-solution@v1
+        with:
+          solution-file: out/dev.zip
+          solution-folder: work/dev
+          solution-type: Unmanaged
+          overwrite-files: true
+
+      - name: Unpack prod
+        uses: microsoft/powerplatform-actions/unpack-solution@v1
+        with:
+          solution-file: out/prod_backup.zip
+          solution-folder: work/prod
+          solution-type: Unmanaged
+          overwrite-files: true
+
+      - name: Transform dev identity onto prod identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $guidRx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+          $textExt = @('.xml','.yaml','.yml','.json','.txt','.html','.csv')
+
+          function Harvest($root, $stem) {
+            $found = @{}
+            foreach ($dir in @("$root/bots", "$root/botcomponents")) {
+              if (-not (Test-Path $dir)) { continue }
+              Get-ChildItem $dir -Recurse -Include *.xml,*.yaml,*.yml -File | ForEach-Object {
+                $raw = Get-Content $_.FullName -Raw
+                $schema = [regex]::Match($raw, '<schemaname>([^<]+)</schemaname>', 'IgnoreCase').Groups[1].Value
+                if (-not $schema) { return }
+                $id = [regex]::Match($raw, "<(botcomponentid|botid)>\s*\{?($guidRx)\}?", 'IgnoreCase').Groups[2].Value
+                if (-not $id) { $id = [regex]::Match($raw, $guidRx).Value }
+                if ($id) { $found[$schema.Replace($stem, 'STEM')] = $id.ToLower() }
+              }
+            }
+            return $found
+          }
+
+          $map = @{}
+          if (Test-Path $env:MAP_FILE) {
+            (Get-Content $env:MAP_FILE -Raw | ConvertFrom-Json).psobject.Properties |
+              ForEach-Object { $map[$_.Name] = $_.Value }
+          }
+          $dev  = Harvest 'work/dev'  $env:DEV_STEM
+          $prod = Harvest 'work/prod' $env:PROD_STEM
+          echo "Harvested dev components: $($dev.Count) ; prod components: $($prod.Count)"
+          if ($dev.Count -eq 0) { Write-Error "ABORT: harvested 0 dev components - the regexes need tuning for your file shapes." }
+          foreach ($k in $dev.Keys) {
+            if (-not $map.ContainsKey($dev[$k])) {
+              if ($prod.ContainsKey($k)) { $map[$dev[$k]] = $prod[$k] }
+              else { $map[$dev[$k]] = [guid]::NewGuid().ToString().ToLower() }
+            }
+          }
+          foreach ($p in @('Other/Solution.xml','solution.xml')) {
+            if ((Test-Path "work/dev/$p") -and (Test-Path "work/prod/$p")) {
+              $dSol = [regex]::Match((Get-Content "work/dev/$p" -Raw), $guidRx).Value.ToLower()
+              $pSol = [regex]::Match((Get-Content "work/prod/$p" -Raw), $guidRx).Value.ToLower()
+              if ($dSol -and $pSol) { $map[$dSol] = $pSol }
+            }
+          }
+          $map | ConvertTo-Json | Set-Content $env:MAP_FILE
+
+          Remove-Item stage -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem work/dev -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring((Resolve-Path work/dev).Path.Length + 1)
+            $rel = $rel.Replace($env:DEV_STEM, $env:PROD_STEM)
+            $t = Join-Path stage $rel
+            New-Item -ItemType Directory -Force -Path (Split-Path $t) | Out-Null
+            if ($textExt -contains $_.Extension.ToLower()) {
+              $c = (Get-Content $_.FullName -Raw).Replace($env:DEV_STEM, $env:PROD_STEM)
+              $c = $c.Replace($env:DEV_SOLUTION, $env:PROD_SOLUTION)
+              foreach ($devId in $map.Keys) { $c = $c -ireplace [regex]::Escape($devId), $map[$devId] }
+              Set-Content -Path $t -Value $c -NoNewline
+            } else {
+              Copy-Item $_.FullName $t -Force
+            }
+          }
+
+          $pathLeak = Get-ChildItem stage -Recurse | Where-Object { $_.FullName -match [regex]::Escape($env:DEV_STEM) }
+          $stemLeak = Get-ChildItem stage -Recurse -File |
+            Where-Object { $textExt -contains $_.Extension.ToLower() } |
+            Where-Object { (Get-Content $_.FullName -Raw) -match [regex]::Escape($env:DEV_STEM) }
+          $idLeak = @()
+          foreach ($devId in $map.Keys) {
+            $hit = Get-ChildItem stage -Recurse -File |
+              Where-Object { $textExt -contains $_.Extension.ToLower() } |
+              Where-Object { (Get-Content $_.FullName -Raw) -imatch [regex]::Escape($devId) }
+            if ($hit) { $idLeak += $devId }
+          }
+          if ($pathLeak -or $stemLeak -or $idLeak) {
+            Write-Error "ABORT: dev identity leaked. Paths: $($pathLeak.FullName -join '; ') Files: $($stemLeak.FullName -join '; ') GUIDs: $($idLeak -join '; ')"
+          }
+          echo "Transform clean."
+
+      - name: Pack transformed solution
+        uses: microsoft/powerplatform-actions/pack-solution@v1
+        with:
+          solution-folder: stage
+          solution-file: out/promote.zip
+          solution-type: Unmanaged
+
+      - name: Import onto prod agent
+        uses: microsoft/powerplatform-actions/import-solution@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+          solution-file: out/promote.zip
+          force-overwrite: true
+          publish-changes: true
+
+      - name: Publish prod agent to its channels
+        shell: pwsh
+        run: |
+          pac auth create --applicationId ${{ secrets.PP_CLIENT_ID }} `
+            --clientSecret ${{ secrets.PP_CLIENT_SECRET }} `
+            --tenant ${{ secrets.PP_TENANT_ID }} `
+            --environment ${{ secrets.PP_ENV_URL }}
+          # Flag names drift between pac versions.
+          # If this errors, run: pac copilot publish --help
+          pac copilot publish --bot-id $env:PROD_BOT_ID
+
+      - name: Commit updated identity map
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add $env:MAP_FILE
+          if (git status --porcelain) {
+            git commit -m "Update identity map (run $env:GITHUB_RUN_NUMBER)"
+            git push
+          }
