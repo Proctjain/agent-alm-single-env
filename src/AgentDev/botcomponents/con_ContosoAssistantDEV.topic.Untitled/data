@@ -1,0 +1,13 @@
+kind: AdaptiveDialog
+modelDescription: Testing version
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SendActivity
+      id: sendActivity_KiXr9G
+      activity: _This is to test the single environment agents._
+
+inputType: {}
+outputType: {}
