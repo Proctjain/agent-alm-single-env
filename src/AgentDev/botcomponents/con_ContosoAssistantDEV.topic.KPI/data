@@ -1,0 +1,13 @@
+kind: AdaptiveDialog
+modelDescription: KPI?
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SendActivity
+      id: sendActivity_u2H2j5
+      activity: What Kind of KPI would you like to know?
+
+inputType: {}
+outputType: {}

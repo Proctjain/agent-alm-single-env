@@ -1,0 +1,10 @@
+<botcomponent schemaname="con_ContosoAssistantDEV.gpt.default">
+  <componenttype>15</componenttype>
+  <iscustomizable>0</iscustomizable>
+  <name>Contoso Assistant DEV</name>
+  <parentbotid>
+    <schemaname>con_ContosoAssistantDEV</schemaname>
+  </parentbotid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</botcomponent>
