@@ -50,13 +50,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: microsoft/powerplatform-actions/actions-install@v1
 
-      - name: Confirm connection (Who Am I)
-        uses: microsoft/powerplatform-actions/who-am-i@v1
-        with:
-          environment-url: ${{ secrets.PP_ENV_URL }}
-          app-id: ${{ secrets.PP_CLIENT_ID }}
-          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
-          tenant-id: ${{ secrets.PP_TENANT_ID }}
+      - name: Verify required secrets are present
+        shell: pwsh
+        env:
+          S_ENV: ${{ secrets.PP_ENV_URL }}
+          S_CID: ${{ secrets.PP_CLIENT_ID }}
+          S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
+          S_TID: ${{ secrets.PP_TENANT_ID }}
+        run: |
+          $missing = @()
+          if (-not $env:S_ENV) { $missing += 'PP_ENV_URL' }
+          if (-not $env:S_CID) { $missing += 'PP_CLIENT_ID' }
+          if (-not $env:S_SEC) { $missing += 'PP_CLIENT_SECRET' }
+          if (-not $env:S_TID) { $missing += 'PP_TENANT_ID' }
+          if ($missing) {
+            Write-Error ("Missing REPOSITORY secrets: " + ($missing -join ', ') +
+              ". Add them at Settings > Secrets and variables > Actions > Repository secrets (not Variables, not Environment secrets).")
+          }
+          if ($env:S_ENV -notmatch '^https://') { Write-Error "PP_ENV_URL must start with https://" }
+          echo "All four secrets present."
 
       - name: Export dev solution (source of truth)
         uses: microsoft/powerplatform-actions/export-solution@v1
