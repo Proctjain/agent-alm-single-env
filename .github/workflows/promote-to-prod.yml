@@ -213,14 +213,25 @@ jobs:
 
       - name: Publish prod agent to its channels
         shell: pwsh
+        env:
+          S_ENV: ${{ secrets.PP_ENV_URL }}
+          S_CID: ${{ secrets.PP_CLIENT_ID }}
+          S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
+          S_TID: ${{ secrets.PP_TENANT_ID }}
         run: |
-          pac auth create --applicationId ${{ secrets.PP_CLIENT_ID }} `
-            --clientSecret ${{ secrets.PP_CLIENT_SECRET }} `
-            --tenant ${{ secrets.PP_TENANT_ID }} `
-            --environment ${{ secrets.PP_ENV_URL }}
+          # actions-install does NOT put pac on PATH; it exports this variable.
+          $pac = $env:POWERPLATFORMTOOLS_PACPATH
+          if (-not $pac -or -not (Test-Path $pac)) {
+            $pac = (Get-ChildItem -Path $env:RUNNER_TEMP,$env:TEMP -Filter pac.exe -Recurse -ErrorAction SilentlyContinue |
+                    Select-Object -First 1).FullName
+          }
+          if (-not $pac) { Write-Error "Could not locate pac.exe on the runner." }
+
+          & $pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
+                             --tenant $env:S_TID --environment $env:S_ENV
           # Flag names drift between pac versions.
           # If this errors, run: pac copilot publish --help
-          pac copilot publish --bot-id $env:PROD_BOT_ID
+          & $pac copilot publish --bot-id $env:PROD_BOT_ID
 
       - name: Commit updated identity map
         shell: pwsh
