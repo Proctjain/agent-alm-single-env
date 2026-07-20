@@ -1,0 +1,75 @@
+# =====================================================================
+# EXPORT DEV AGENT  --  versioning + PR review gate
+# Manual trigger. Exports the DEV solution, unpacks it to src/,
+# pushes a branch. You then open the PR and review the diff.
+#
+#  >>> EDIT LINE 16 ONLY  <<<
+# =====================================================================
+name: Export dev agent (version + review)
+
+on:
+  workflow_dispatch:
+    inputs:
+      solution_name:
+        description: "Dev solution unique Name"
+        required: true
+        default: AgentDev                      # <<< EDIT 1: your DEV solution Name
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: windows-latest
+    env:
+      SOLUTION_NAME: ${{ github.event.inputs.solution_name }}
+      EXPORT_BRANCH: export/${{ github.event.inputs.solution_name }}-${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/powerplatform-actions/actions-install@v1
+
+      - name: Confirm connection (Who Am I)
+        uses: microsoft/powerplatform-actions/who-am-i@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+
+      - name: Export dev solution (unmanaged)
+        uses: microsoft/powerplatform-actions/export-solution@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+          solution-name: ${{ env.SOLUTION_NAME }}
+          managed: false
+          solution-output-file: out/${{ env.SOLUTION_NAME }}.zip
+
+      - name: Clean previous unpacked source
+        shell: pwsh
+        run: |
+          if (Test-Path "src/${{ env.SOLUTION_NAME }}") {
+            Remove-Item -Recurse -Force "src/${{ env.SOLUTION_NAME }}"
+          }
+
+      - name: Unpack
+        uses: microsoft/powerplatform-actions/unpack-solution@v1
+        with:
+          solution-file: out/${{ env.SOLUTION_NAME }}.zip
+          solution-folder: src/${{ env.SOLUTION_NAME }}
+          solution-type: Unmanaged
+          overwrite-files: true
+
+      - name: Commit to a new branch
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -b $env:EXPORT_BRANCH
+          git add -A src
+          if (git status --porcelain) {
+            git commit -m "Export $env:SOLUTION_NAME (run $env:GITHUB_RUN_NUMBER)"
+            git push origin $env:EXPORT_BRANCH
+          } else { echo "No changes." }
