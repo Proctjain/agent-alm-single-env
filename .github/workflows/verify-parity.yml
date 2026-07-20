@@ -1,0 +1,104 @@
+# =====================================================================
+# VERIFY DEV / PROD AGENT PARITY  --  drift detector
+# Exports both agents, neutralises the legitimate identity differences
+# (schema names + GUIDs), and diffs. Green = prod matches dev.
+#
+#  >>> EDIT LINES 16, 20, 24, 28  <<<
+# =====================================================================
+name: Verify dev-prod agent parity
+
+on:
+  workflow_dispatch:
+    inputs:
+      dev_solution:
+        description: "Dev solution Name"
+        required: true
+        default: AgentDev                      # <<< EDIT 1: DEV solution Name
+      prod_solution:
+        description: "Prod solution Name"
+        required: true
+        default: AgentProd                     # <<< EDIT 2: PROD solution Name
+      dev_stem:
+        description: "Dev agent schema name"
+        required: true
+        default: con_contosoassistantdev       # <<< EDIT 3: DEV agent schema name
+      prod_stem:
+        description: "Prod agent schema name"
+        required: true
+        default: con_contosoassistant          # <<< EDIT 4: PROD agent schema name
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    env:
+      DEV_SOLUTION: ${{ github.event.inputs.dev_solution }}
+      PROD_SOLUTION: ${{ github.event.inputs.prod_solution }}
+      DEV_STEM: ${{ github.event.inputs.dev_stem }}
+      PROD_STEM: ${{ github.event.inputs.prod_stem }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/powerplatform-actions/actions-install@v1
+
+      - name: Export dev
+        uses: microsoft/powerplatform-actions/export-solution@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+          solution-name: ${{ env.DEV_SOLUTION }}
+          managed: false
+          solution-output-file: out/dev.zip
+
+      - name: Export prod
+        uses: microsoft/powerplatform-actions/export-solution@v1
+        with:
+          environment-url: ${{ secrets.PP_ENV_URL }}
+          app-id: ${{ secrets.PP_CLIENT_ID }}
+          client-secret: ${{ secrets.PP_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.PP_TENANT_ID }}
+          solution-name: ${{ env.PROD_SOLUTION }}
+          managed: false
+          solution-output-file: out/prod.zip
+
+      - name: Unpack dev
+        uses: microsoft/powerplatform-actions/unpack-solution@v1
+        with:
+          solution-file: out/dev.zip
+          solution-folder: work/dev
+          solution-type: Unmanaged
+          overwrite-files: true
+
+      - name: Unpack prod
+        uses: microsoft/powerplatform-actions/unpack-solution@v1
+        with:
+          solution-file: out/prod.zip
+          solution-folder: work/prod
+          solution-type: Unmanaged
+          overwrite-files: true
+
+      - name: Normalize and diff
+        shell: pwsh
+        run: |
+          $guid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+          function Normalize($src, $dst, $from) {
+            if (-not (Test-Path $src)) { return }
+            Get-ChildItem $src -Recurse -File | ForEach-Object {
+              $rel = $_.FullName.Substring((Resolve-Path $src).Path.Length + 1)
+              $rel = $rel -replace [regex]::Escape($from), 'AGENT'
+              $t = Join-Path $dst $rel
+              New-Item -ItemType Directory -Force -Path (Split-Path $t) | Out-Null
+              (Get-Content $_.FullName -Raw) `
+                -replace [regex]::Escape($from), 'AGENT' `
+                -replace $guid, 'GUID' | Set-Content $t
+            }
+          }
+          foreach ($f in @('bots','botcomponents')) {
+            Normalize "work/dev/$f"  "norm/dev/$f"  $env:DEV_STEM
+            Normalize "work/prod/$f" "norm/prod/$f" $env:PROD_STEM
+          }
+          git diff --no-index --stat norm/dev norm/prod
+          if ($LASTEXITCODE -ne 0) {
+            git diff --no-index norm/dev norm/prod | Select-Object -First 150
+            Write-Error "DRIFT: prod agent does not match dev agent."
+          } else { echo "PARITY OK." }
