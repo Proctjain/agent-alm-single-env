@@ -1,9 +1,11 @@
 # =====================================================================
-# VERIFY DEV / PROD AGENT PARITY  --  drift detector
+# VERIFY DEV / PROD AGENT PARITY  --  drift detector (read-only)
 # Exports both agents, neutralises the legitimate identity differences
-# (schema names + GUIDs), and diffs. Green = prod matches dev.
+# (schema names + GUIDs), then compares. Fails the run on drift.
 #
-#  >>> EDIT LINES 16, 20, 24, 28  <<<
+# A RED RUN IS NOT A BROKEN SCRIPT - it means prod does not match dev.
+#
+#  >>> EDIT LINES 18, 22, 26, 30  <<<
 # =====================================================================
 name: Verify dev-prod agent parity
 
@@ -38,26 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/powerplatform-actions/actions-install@v1
-
-      - name: Verify required secrets are present
-        shell: pwsh
-        env:
-          S_ENV: ${{ secrets.PP_ENV_URL }}
-          S_CID: ${{ secrets.PP_CLIENT_ID }}
-          S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
-          S_TID: ${{ secrets.PP_TENANT_ID }}
-        run: |
-          $missing = @()
-          if (-not $env:S_ENV) { $missing += 'PP_ENV_URL' }
-          if (-not $env:S_CID) { $missing += 'PP_CLIENT_ID' }
-          if (-not $env:S_SEC) { $missing += 'PP_CLIENT_SECRET' }
-          if (-not $env:S_TID) { $missing += 'PP_TENANT_ID' }
-          if ($missing) {
-            Write-Error ("Missing REPOSITORY secrets: " + ($missing -join ', ') +
-              ". Add them at Settings > Secrets and variables > Actions > Repository secrets (not Variables, not Environment secrets).")
-          }
-          if ($env:S_ENV -notmatch '^https://') { Write-Error "PP_ENV_URL must start with https://" }
-          echo "All four secrets present."
 
       - name: Export dev
         uses: microsoft/powerplatform-actions/export-solution@v1
@@ -97,28 +79,95 @@ jobs:
           solution-type: Unmanaged
           overwrite-files: true
 
-      - name: Normalize and diff
+      - name: Normalize identities and compare
         shell: pwsh
         run: |
-          $guid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-          function Normalize($src, $dst, $from) {
-            if (-not (Test-Path $src)) { return }
-            Get-ChildItem $src -Recurse -File | ForEach-Object {
-              $rel = $_.FullName.Substring((Resolve-Path $src).Path.Length + 1)
-              $rel = $rel -replace [regex]::Escape($from), 'AGENT'
-              $t = Join-Path $dst $rel
-              New-Item -ItemType Directory -Force -Path (Split-Path $t) | Out-Null
-              (Get-Content $_.FullName -Raw) `
-                -replace [regex]::Escape($from), 'AGENT' `
-                -replace $guid, 'GUID' | Set-Content $t
+          $ErrorActionPreference = 'Stop'
+          $guidRx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+          $binExt = @('.png','.jpg','.jpeg','.gif','.bmp','.ico','.webp','.tif','.tiff',
+                      '.zip','.dll','.exe','.pdf','.msapp','.gz','.7z')
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+
+          function IsTextFile($file) {
+            if ($binExt -contains $file.Extension.ToLower()) { return $false }
+            try {
+              $fs = [System.IO.File]::OpenRead($file.FullName)
+              $buf = New-Object byte[] 4096
+              $n = $fs.Read($buf, 0, 4096); $fs.Close()
+              for ($j = 0; $j -lt $n; $j++) { if ($buf[$j] -eq 0) { return $false } }
+              return $true
+            } catch { return $false }
+          }
+
+          # Build a dictionary of relative-path -> normalized content.
+          # 'Other/' is skipped: solution metadata legitimately differs.
+          function Snapshot($root, $stem) {
+            $out = @{}
+            foreach ($area in @('bots','botcomponents')) {
+              $base = Join-Path $root $area
+              if (-not (Test-Path $base)) { continue }
+              $basePath = (Resolve-Path $base).Path
+              foreach ($f in @(Get-ChildItem $base -Recurse -File)) {
+                if (-not (IsTextFile $f)) { continue }
+                $rel = $area + '/' + $f.FullName.Substring($basePath.Length + 1)
+                $rel = $rel.Replace($stem, 'AGENT').Replace('\', '/')
+                $c = [System.IO.File]::ReadAllText($f.FullName)
+                $c = $c.Replace($stem, 'AGENT')
+                $c = [regex]::Replace($c, $guidRx, 'GUID')
+                $c = $c -replace "`r`n", "`n"
+                $out[$rel] = $c.Trim()
+              }
             }
+            return $out
           }
-          foreach ($f in @('bots','botcomponents')) {
-            Normalize "work/dev/$f"  "norm/dev/$f"  $env:DEV_STEM
-            Normalize "work/prod/$f" "norm/prod/$f" $env:PROD_STEM
+
+          $dev  = Snapshot 'work/dev'  $env:DEV_STEM
+          $prod = Snapshot 'work/prod' $env:PROD_STEM
+          Write-Host ("Compared {0} dev files against {1} prod files." -f $dev.Count, $prod.Count)
+          Write-Host ""
+
+          $onlyDev  = @($dev.Keys  | Where-Object { -not $prod.ContainsKey($_) } | Sort-Object)
+          $onlyProd = @($prod.Keys | Where-Object { -not $dev.ContainsKey($_)  } | Sort-Object)
+          $differs  = @($dev.Keys  | Where-Object { $prod.ContainsKey($_) -and $prod[$_] -ne $dev[$_] } | Sort-Object)
+
+          if ($onlyDev.Count -gt 0) {
+            Write-Host "---- IN DEV BUT NOT IN PROD (promotion has not created these yet) ----"
+            $onlyDev | ForEach-Object { Write-Host ("  + " + $_) }
+            Write-Host ""
           }
-          git diff --no-index --stat norm/dev norm/prod
-          if ($LASTEXITCODE -ne 0) {
-            git diff --no-index norm/dev norm/prod | Select-Object -First 150
-            Write-Error "DRIFT: prod agent does not match dev agent."
-          } else { echo "PARITY OK." }
+          if ($onlyProd.Count -gt 0) {
+            Write-Host "---- IN PROD BUT NOT IN DEV (deleted in dev; unmanaged import never removes) ----"
+            $onlyProd | ForEach-Object { Write-Host ("  - " + $_) }
+            Write-Host ""
+          }
+          if ($differs.Count -gt 0) {
+            Write-Host "---- CONTENT DIFFERS ----"
+            foreach ($k in $differs) {
+              Write-Host ("  ~ " + $k)
+              $dl = $dev[$k]  -split "`n"
+              $pl = $prod[$k] -split "`n"
+              $shown = 0
+              for ($i = 0; $i -lt [Math]::Max($dl.Count, $pl.Count); $i++) {
+                $a = if ($i -lt $dl.Count) { $dl[$i] } else { '' }
+                $b = if ($i -lt $pl.Count) { $pl[$i] } else { '' }
+                if ($a -ne $b) {
+                  Write-Host ("      line {0}" -f ($i + 1))
+                  Write-Host ("        dev : " + $a.Trim())
+                  Write-Host ("        prod: " + $b.Trim())
+                  $shown++
+                  if ($shown -ge 4) { Write-Host "        ... (more differences in this file)"; break }
+                }
+              }
+            }
+            Write-Host ""
+          }
+
+          $total = $onlyDev.Count + $onlyProd.Count + $differs.Count
+          if ($total -eq 0) {
+            Write-Host "########################################"
+            Write-Host "#  PARITY OK - prod matches dev.       #"
+            Write-Host "########################################"
+          } else {
+            Write-Host ("Summary: {0} only-in-dev, {1} only-in-prod, {2} differing." -f $onlyDev.Count, $onlyProd.Count, $differs.Count)
+            Write-Error "DRIFT: prod agent does not match dev agent. See detail above."
+          }
