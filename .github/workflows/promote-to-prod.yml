@@ -119,7 +119,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $guidRx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-          $textExt = @('.xml','.yaml','.yml','.json','.txt','.html','.csv')
+          # Solution files often have NO extension (e.g. botcomponents/.../data),
+          # so never filter by extension - detect binary by content instead.
+          $binExt = @('.png','.jpg','.jpeg','.gif','.bmp','.ico','.webp','.tif','.tiff',
+                      '.zip','.dll','.exe','.pdf','.msapp','.gz','.7z')
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          function IsTextFile($file) {
+            if ($binExt -contains $file.Extension.ToLower()) { return $false }
+            try {
+              $fs = [System.IO.File]::OpenRead($file.FullName)
+              $buf = New-Object byte[] 4096
+              $n = $fs.Read($buf, 0, 4096); $fs.Close()
+              for ($j = 0; $j -lt $n; $j++) { if ($buf[$j] -eq 0) { return $false } }
+              return $true
+            } catch { return $false }
+          }
 
           # ---------- guard: the two stems must differ ----------
           if ($env:DEV_STEM -eq $env:PROD_STEM) {
@@ -252,25 +266,26 @@ jobs:
             $rel = $rel.Replace($env:DEV_STEM, $env:PROD_STEM)
             $t = Join-Path stage $rel
             New-Item -ItemType Directory -Force -Path (Split-Path $t) | Out-Null
-            if ($textExt -contains $_.Extension.ToLower()) {
-              $c = (Get-Content $_.FullName -Raw).Replace($env:DEV_STEM, $env:PROD_STEM)
+            if (IsTextFile $_) {
+              $c = [System.IO.File]::ReadAllText($_.FullName)
+              $c = $c.Replace($env:DEV_STEM, $env:PROD_STEM)
               $c = $c.Replace($env:DEV_SOLUTION, $env:PROD_SOLUTION)
               foreach ($devId in $map.Keys) { $c = $c -ireplace [regex]::Escape($devId), $map[$devId] }
-              Set-Content -Path $t -Value $c -NoNewline
+              [System.IO.File]::WriteAllText($t, $c, $utf8)
             } else {
               Copy-Item $_.FullName $t -Force
             }
           }
 
           $pathLeak = Get-ChildItem stage -Recurse | Where-Object { $_.FullName -match [regex]::Escape($env:DEV_STEM) }
-          $stemLeak = Get-ChildItem stage -Recurse -File |
-            Where-Object { $textExt -contains $_.Extension.ToLower() } |
-            Where-Object { (Get-Content $_.FullName -Raw) -match [regex]::Escape($env:DEV_STEM) }
+          $textFiles = @(Get-ChildItem stage -Recurse -File | Where-Object { IsTextFile $_ })
+          Write-Host ("Safety gate scanning {0} text files (all extensions)." -f $textFiles.Count)
+          $stemLeak = $textFiles |
+            Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match [regex]::Escape($env:DEV_STEM) }
           $idLeak = @()
           foreach ($devId in $map.Keys) {
-            $hit = Get-ChildItem stage -Recurse -File |
-              Where-Object { $textExt -contains $_.Extension.ToLower() } |
-              Where-Object { (Get-Content $_.FullName -Raw) -imatch [regex]::Escape($devId) }
+            $hit = $textFiles |
+              Where-Object { [System.IO.File]::ReadAllText($_.FullName) -imatch [regex]::Escape($devId) }
             if ($hit) { $idLeak += $devId }
           }
           if ($pathLeak -or $stemLeak -or $idLeak) {
