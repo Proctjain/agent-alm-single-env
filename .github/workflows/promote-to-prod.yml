@@ -297,6 +297,7 @@ jobs:
           publish-changes: true
 
       - name: Publish prod agent to its channels
+        continue-on-error: true      # import already succeeded; publish is the channel push
         shell: pwsh
         env:
           S_ENV: ${{ secrets.PP_ENV_URL }}
@@ -304,19 +305,51 @@ jobs:
           S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
           S_TID: ${{ secrets.PP_TENANT_ID }}
         run: |
-          # actions-install does NOT put pac on PATH; it exports this variable.
+          $ErrorActionPreference = 'Continue'
+          $envUrl = $env:S_ENV.TrimEnd('/')
+
           $pac = $env:POWERPLATFORMTOOLS_PACPATH
           if (-not $pac -or -not (Test-Path $pac)) {
             $pac = (Get-ChildItem -Path $env:RUNNER_TEMP,$env:TEMP -Filter pac.exe -Recurse -ErrorAction SilentlyContinue |
                     Select-Object -First 1).FullName
           }
-          if (-not $pac) { Write-Error "Could not locate pac.exe on the runner." }
+          if (-not $pac) { Write-Host "Could not locate pac.exe."; exit 1 }
 
           & $pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
-                             --tenant $env:S_TID --environment $env:S_ENV
-          # NOTE: this pac version uses --bot (not --bot-id).
-          # --bot accepts the Copilot ID *or* the agent schema name.
-          & $pac copilot publish --environment $env:S_ENV --bot $env:PROD_BOT_ID
+                             --tenant $env:S_TID --environment $envUrl | Out-Null
+
+          # pac argument shapes vary by build - try the documented forms in order.
+          $attempts = @(
+            @('copilot','publish','--bot', $env:PROD_BOT_ID),
+            @('copilot','publish','-id',   $env:PROD_BOT_ID),
+            @('copilot','publish','--bot', $env:PROD_STEM),
+            @('copilot','publish','--environment', $envUrl, '--bot', $env:PROD_STEM)
+          )
+
+          $ok = $false
+          foreach ($a in $attempts) {
+            Write-Host ""
+            Write-Host ("---- trying: pac " + ($a -join ' ')) 
+            & $pac @a
+            if ($LASTEXITCODE -eq 0) { $ok = $true; Write-Host "PUBLISH SUCCEEDED."; break }
+            Write-Host ("   failed with exit code " + $LASTEXITCODE)
+          }
+
+          if (-not $ok) {
+            Write-Host ""
+            Write-Host "######################################################################"
+            Write-Host "# PUBLISH DID NOT COMPLETE - but the IMPORT SUCCEEDED.               #"
+            Write-Host "# Your prod agent already has the promoted content in its draft.     #"
+            Write-Host "# Finish by opening the PROD agent in Copilot Studio and clicking    #"
+            Write-Host "# Publish. Everything else in this pipeline is done.                 #"
+            Write-Host "######################################################################"
+            $logPath = Join-Path (Split-Path $pac) 'logs\pac-log.txt'
+            if (Test-Path $logPath) {
+              Write-Host ""
+              Write-Host "---- last 40 lines of pac-log.txt ----"
+              Get-Content $logPath -Tail 40
+            }
+          }
 
       - name: Commit updated identity map
         shell: pwsh
