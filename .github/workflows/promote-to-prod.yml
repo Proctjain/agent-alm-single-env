@@ -121,19 +121,76 @@ jobs:
           $guidRx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
           $textExt = @('.xml','.yaml','.yml','.json','.txt','.html','.csv')
 
-          function Harvest($root, $stem) {
-            $found = @{}
-            foreach ($dir in @("$root/bots", "$root/botcomponents")) {
-              if (-not (Test-Path $dir)) { continue }
-              Get-ChildItem $dir -Recurse -Include *.xml,*.yaml,*.yml -File | ForEach-Object {
-                $raw = Get-Content $_.FullName -Raw
-                $schema = [regex]::Match($raw, '<schemaname>([^<]+)</schemaname>', 'IgnoreCase').Groups[1].Value
-                if (-not $schema) { return }
-                $id = [regex]::Match($raw, "<(botcomponentid|botid)>\s*\{?($guidRx)\}?", 'IgnoreCase').Groups[2].Value
-                if (-not $id) { $id = [regex]::Match($raw, $guidRx).Value }
-                if ($id) { $found[$schema.Replace($stem, 'STEM')] = $id.ToLower() }
+          # ---------- guard: the two stems must differ ----------
+          if ($env:DEV_STEM -eq $env:PROD_STEM) {
+            Write-Error ("ABORT: DEV_STEM and PROD_STEM are both '" + $env:DEV_STEM +
+              "'. They must be the two DIFFERENT agent schema names (workflow lines 25 and 29).")
+          }
+          if ($env:DEV_SOLUTION -eq $env:PROD_SOLUTION) {
+            Write-Error "ABORT: DEV_SOLUTION and PROD_SOLUTION are identical (lines 17 and 21)."
+          }
+
+          # ---------- always report what was actually unpacked ----------
+          function Report($label, $root) {
+            Write-Host "===== $label ====="
+            if (-not (Test-Path $root)) { Write-Host "  (folder missing entirely)"; return }
+            $files = @(Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue)
+            Write-Host ("  total files: {0}" -f $files.Count)
+            Get-ChildItem $root -Directory | ForEach-Object { Write-Host ("  [DIR] {0}" -f $_.Name) }
+            $files | Group-Object Extension | Sort-Object Count -Descending |
+              ForEach-Object { Write-Host ("     {0,-8} {1}" -f $_.Name, $_.Count) }
+            foreach ($d in @('bots','botcomponents')) {
+              $p = Join-Path $root $d
+              if (Test-Path $p) {
+                Write-Host ("  {0}/ subfolders:" -f $d)
+                Get-ChildItem $p -Directory | Select-Object -First 15 |
+                  ForEach-Object { Write-Host ("      {0}" -f $_.Name) }
+              } else {
+                Write-Host ("  {0}/ : NOT PRESENT  <-- no agent in this solution" -f $d)
               }
             }
+          }
+          Write-Host "############ STRUCTURE REPORT ############"
+          Report "work/dev  (solution $env:DEV_SOLUTION)"  'work/dev'
+          Report "work/prod (solution $env:PROD_SOLUTION)" 'work/prod'
+          Write-Host ""
+
+          # ---------- multi-strategy harvest ----------
+          function Harvest($root, $stem) {
+            $found = @{}
+            if (-not (Test-Path $root)) { return $found }
+
+            # Strategy 1: metadata files carrying a schema name + an id
+            Get-ChildItem $root -Recurse -File -Include *.xml,*.yaml,*.yml,*.json -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                $raw = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                if (-not $raw) { return }
+                $m = [regex]::Match($raw,
+                     '(?:<schemaname>|"schemaname"\s*:\s*"|schemaname\s*=\s*")([^<",]+)', 'IgnoreCase')
+                if (-not $m.Success) { return }
+                $schema = $m.Groups[1].Value.Trim()
+                $idm = [regex]::Match($raw,
+                       '(?:<(?:botcomponentid|botid)>|"(?:botcomponentid|botid)"\s*:\s*")\s*\{?(' + $guidRx + ')', 'IgnoreCase')
+                $id = if ($idm.Success) { $idm.Groups[1].Value } else { [regex]::Match($raw, $guidRx).Value }
+                if ($id) { $found[$schema.Replace($stem, 'STEM')] = $id.ToLower() }
+              }
+            if ($found.Count -gt 0) { Write-Host ("  harvest strategy 1 (metadata) matched {0}" -f $found.Count); return $found }
+
+            # Strategy 2: fall back to folder names under bots/ and botcomponents/
+            foreach ($d in @("$root/bots", "$root/botcomponents")) {
+              if (-not (Test-Path $d)) { continue }
+              Get-ChildItem $d -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $key = $_.Name.Replace($stem, 'STEM')
+                $g = $null
+                foreach ($f in @(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue)) {
+                  if ($g) { break }
+                  $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+                  if ($c) { $mm = [regex]::Match($c, $guidRx); if ($mm.Success) { $g = $mm.Value } }
+                }
+                if ($g) { $found[$key] = $g.ToLower() }
+              }
+            }
+            if ($found.Count -gt 0) { Write-Host ("  harvest strategy 2 (folder names) matched {0}" -f $found.Count) }
             return $found
           }
 
@@ -144,8 +201,36 @@ jobs:
           }
           $dev  = Harvest 'work/dev'  $env:DEV_STEM
           $prod = Harvest 'work/prod' $env:PROD_STEM
-          echo "Harvested dev components: $($dev.Count) ; prod components: $($prod.Count)"
-          if ($dev.Count -eq 0) { Write-Error "ABORT: harvested 0 dev components - the regexes need tuning for your file shapes." }
+          Write-Host ("Harvested dev components: {0} ; prod components: {1}" -f $dev.Count, $prod.Count)
+
+          if ($dev.Count -eq 0) {
+            Write-Host ""
+            Write-Host "############ DIAGNOSTIC DUMP (harvest found nothing) ############"
+            Write-Host "--- every file under work/dev ---"
+            Get-ChildItem work/dev -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object -First 80 | ForEach-Object { Write-Host ("  " + $_.FullName) }
+            Write-Host "--- any line containing 'schemaname' ---"
+            $h = Get-ChildItem work -Recurse -File -ErrorAction SilentlyContinue |
+                 Select-String -Pattern 'schemaname' -ErrorAction SilentlyContinue | Select-Object -First 20
+            if ($h) { $h | ForEach-Object { Write-Host ("  {0}: {1}" -f $_.Filename, $_.Line.Trim()) } }
+            else { Write-Host "  none" }
+            Write-Host "--- Solution.xml root components ---"
+            foreach ($sp in @('work/dev/Other/Solution.xml','work/dev/solution.xml')) {
+              if (Test-Path $sp) {
+                Select-String -Path $sp -Pattern 'RootComponent|UniqueName' |
+                  Select-Object -First 25 | ForEach-Object { Write-Host ("  " + $_.Line.Trim()) }
+              }
+            }
+            Write-Host "--- first 40 lines of up to 3 metadata files ---"
+            Get-ChildItem work/dev -Recurse -File -Include *.xml,*.yaml,*.yml,*.json -ErrorAction SilentlyContinue |
+              Select-Object -First 3 | ForEach-Object {
+                Write-Host ("===== " + $_.FullName + " =====")
+                Get-Content $_.FullName -TotalCount 40
+              }
+            Write-Host "################################################################"
+            Write-Error "ABORT: harvested 0 dev components. If 'bots/ : NOT PRESENT' above, the agent is not inside solution '$env:DEV_SOLUTION' - add it in Copilot Studio and re-run. Otherwise paste this dump."
+          }
+
           foreach ($k in $dev.Keys) {
             if (-not $map.ContainsKey($dev[$k])) {
               if ($prod.ContainsKey($k)) { $map[$dev[$k]] = $prod[$k] }
