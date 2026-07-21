@@ -314,9 +314,9 @@ jobs:
 
           & $pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
                              --tenant $env:S_TID --environment $env:S_ENV
-          # Flag names drift between pac versions.
-          # If this errors, run: pac copilot publish --help
-          & $pac copilot publish --bot-id $env:PROD_BOT_ID
+          # NOTE: this pac version uses --bot (not --bot-id).
+          # --bot accepts the Copilot ID *or* the agent schema name.
+          & $pac copilot publish --environment $env:S_ENV --bot $env:PROD_BOT_ID
 
       - name: Commit updated identity map
         shell: pwsh
