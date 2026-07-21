@@ -1,7 +1,10 @@
 # =====================================================================
 # DISCOVER ENVIRONMENT VALUES  --  run this once, read the log
-# Prints every solution's UNIQUE NAME and every agent's Bot ID,
-# so you can fill in the EDIT lines of the other workflows.
+# Prints:
+#   1. every SOLUTION's unique name        -> EDIT 1 / EDIT 2
+#   2. every AGENT's schema name + Bot ID  -> EDIT 3 / EDIT 4 / EDIT 5
+#   3. how many components each agent has  -> sanity check
+#   4. which agents are inside which solution
 # Read-only: nothing in the environment is changed. No edits needed.
 # =====================================================================
 name: Discover solutions and agents
@@ -15,7 +18,7 @@ jobs:
     steps:
       - uses: microsoft/powerplatform-actions/actions-install@v1
 
-      - name: Authenticate and list
+      - name: Discover
         shell: pwsh
         env:
           S_ENV: ${{ secrets.PP_ENV_URL }}
@@ -23,28 +26,78 @@ jobs:
           S_SEC: ${{ secrets.PP_CLIENT_SECRET }}
           S_TID: ${{ secrets.PP_TENANT_ID }}
         run: |
-          # actions-install does NOT put pac on PATH; it exports this variable.
+          $ErrorActionPreference = 'Continue'
+          $envUrl = $env:S_ENV.TrimEnd('/')
+
+          # ---------- pac: solution list ----------
           $pac = $env:POWERPLATFORMTOOLS_PACPATH
           if (-not $pac -or -not (Test-Path $pac)) {
             $pac = (Get-ChildItem -Path $env:RUNNER_TEMP,$env:TEMP -Filter pac.exe -Recurse -ErrorAction SilentlyContinue |
                     Select-Object -First 1).FullName
           }
-          if (-not $pac) { Write-Error "Could not locate pac.exe on the runner." }
-          Write-Host "Using pac at: $pac"
+          if ($pac) {
+            & $pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
+                               --tenant $env:S_TID --environment $envUrl | Out-Null
+            Write-Host "############ 1. SOLUTIONS (unique name -> EDIT 1 / EDIT 2) ############"
+            & $pac solution list
+          } else {
+            Write-Host "pac.exe not found - skipping solution list (the API section below still runs)."
+          }
 
-          & $pac auth create --applicationId $env:S_CID --clientSecret $env:S_SEC `
-                             --tenant $env:S_TID --environment $env:S_ENV
+          # ---------- Dataverse Web API ----------
+          Write-Host ""
+          Write-Host "############ 2. AGENTS (schema name -> EDIT 3 / EDIT 4 ; Bot ID -> EDIT 5) ############"
+          try {
+            $tok = Invoke-RestMethod -Method Post `
+              -Uri "https://login.microsoftonline.com/$($env:S_TID)/oauth2/v2.0/token" `
+              -Body @{
+                client_id     = $env:S_CID
+                client_secret = $env:S_SEC
+                scope         = "$envUrl/.default"
+                grant_type    = "client_credentials"
+              }
+            $h = @{ Authorization = "Bearer $($tok.access_token)"; Accept = "application/json" }
 
-          Write-Host ""
-          Write-Host "================ SOLUTIONS ================"
-          Write-Host "Use the UNIQUE NAME column for EDIT 1 / EDIT 2."
-          Write-Host ""
-          & $pac solution list
+            $bots = Invoke-RestMethod -Method Get -Headers $h `
+              -Uri "$envUrl/api/data/v9.2/bots?`$select=botid,name,schemaname"
 
-          Write-Host ""
-          Write-Host "================ AGENTS ================"
-          Write-Host "Use the Bot ID of your PROD agent for EDIT 5."
-          Write-Host ""
-          # Non-fatal: if this command group differs in your pac version,
-          # the solutions list above is still what you need.
-          try { & $pac copilot list } catch { Write-Host "copilot list unavailable: $_" }
+            if ($bots.value.Count -eq 0) {
+              Write-Host "  No agents found in this environment."
+            } else {
+              $bots.value | Select-Object @{n='Display name';e={$_.name}},
+                                          @{n='SCHEMA NAME';e={$_.schemaname}},
+                                          @{n='BOT ID';e={$_.botid}} |
+                Format-Table -AutoSize | Out-String -Width 250 | Write-Host
+            }
+
+            # ---------- component counts ----------
+            Write-Host "############ 3. COMPONENT COUNT PER AGENT (0 = empty agent) ############"
+            $comps = Invoke-RestMethod -Method Get -Headers $h `
+              -Uri "$envUrl/api/data/v9.2/botcomponents?`$select=name,schemaname,_parentbotid_value"
+            foreach ($b in $bots.value) {
+              $n = ($comps.value | Where-Object { $_._parentbotid_value -eq $b.botid }).Count
+              Write-Host ("  {0,-40} {1} components" -f $b.name, $n)
+            }
+
+            # ---------- which solution holds which agent ----------
+            Write-Host ""
+            Write-Host "############ 4. AGENTS INSIDE EACH SOLUTION ############"
+            Write-Host "(if your agent is NOT listed under your solution, that is why the export was empty)"
+            $sols = Invoke-RestMethod -Method Get -Headers $h `
+              -Uri "$envUrl/api/data/v9.2/solutions?`$select=solutionid,uniquename,friendlyname&`$filter=isvisible eq true"
+            $sc = Invoke-RestMethod -Method Get -Headers $h `
+              -Uri "$envUrl/api/data/v9.2/solutioncomponents?`$select=objectid,componenttype,_solutionid_value"
+            foreach ($s in $sols.value) {
+              $ids = ($sc.value | Where-Object { $_._solutionid_value -eq $s.solutionid }).objectid
+              $inSol = $bots.value | Where-Object { $ids -contains $_.botid }
+              if ($inSol) {
+                Write-Host ("  Solution '{0}' (unique name: {1}) contains:" -f $s.friendlyname, $s.uniquename)
+                foreach ($b in $inSol) { Write-Host ("      - {0}   schema: {1}" -f $b.name, $b.schemaname) }
+              }
+            }
+          }
+          catch {
+            Write-Host "Web API query failed: $_"
+            Write-Host "Falling back to pac copilot list:"
+            if ($pac) { try { & $pac copilot list } catch { Write-Host "  unavailable: $_" } }
+          }
