@@ -179,14 +179,8 @@ jobs:
           # ---- load persistent map, then extend it by folder correspondence ----
           $map = @{}
           if (Test-Path $env:MAP_FILE) {
-            $loaded = 0; $skipped = 0
-            foreach ($prop in @((Get-Content $env:MAP_FILE -Raw | ConvertFrom-Json).psobject.Properties)) {
-              $mk = [string]$prop.Name; $mv = [string]$prop.Value
-              if ($mk -match ('^' + $guidRx + '$') -and $mv -match ('^' + $guidRx + '$') -and ($mk -ine $mv)) {
-                $map[$mk] = $mv; $loaded++
-              } else { $skipped++ }
-            }
-            Write-Host ("Loaded identity map: {0} valid entries, {1} invalid discarded." -f $loaded, $skipped)
+            (Get-Content $env:MAP_FILE -Raw | ConvertFrom-Json).psobject.Properties |
+              ForEach-Object { $map[$_.Name] = $_.Value }
           }
 
           $pairs = 0
@@ -210,53 +204,22 @@ jobs:
             }
 
             foreach ($u in $units) {
-              $devG  = @(GuidsIn $u.Dev)
-              $prodG = @(GuidsIn $u.Prod)
-              Write-Host ("  {0,-52} dev {1,3} guids / prod {2,3} guids" -f $u.Name, $devG.Count, $prodG.Count)
+              $devG  = GuidsIn $u.Dev
+              $prodG = GuidsIn $u.Prod
               for ($k = 0; $k -lt $devG.Count; $k++) {
-                $d = [string]$devG[$k]
+                $d = $devG[$k]
                 if ($map.ContainsKey($d)) { continue }
-                if ($k -lt $prodG.Count) {
-                  $pv = [string]$prodG[$k]
-                  if ($pv -ieq $d) { continue }   # identical in both agents - shared ref, leave alone
-                  $map[$d] = $pv
-                } else {
-                  $map[$d] = [string]([guid]::NewGuid().ToString().ToLower())
-                }
+                if ($k -lt $prodG.Count) { $map[$d] = $prodG[$k] }
+                else { $map[$d] = [guid]::NewGuid().ToString().ToLower() }
                 $pairs++
               }
             }
           }
           Write-Host ("Identity map: {0} total entries ({1} new this run)." -f $map.Count, $pairs)
-
-          # --- structural warnings (not fatal) ---
-          $devBC  = @(Get-ChildItem 'work/dev/botcomponents'  -Directory -ErrorAction SilentlyContinue)
-          $prodBC = @(Get-ChildItem 'work/prod/botcomponents' -Directory -ErrorAction SilentlyContinue)
-          if ($devBC.Count -ne $prodBC.Count) {
-            Write-Host ("NOTE: dev has {0} component folders, prod has {1}. Extra dev components will be created in prod." -f $devBC.Count, $prodBC.Count)
-          }
-          $collide = @($devBC | Where-Object { $_.Name -like ("*" + $env:DEV_SOLUTION + "*") })
-          foreach ($cl in $collide) {
-            Write-Host ("NOTE: component '" + $cl.Name + "' contains the solution name - solution-name rewrite is scoped to Other/ so it is safe.")
-          }
-          $foreign = @($devBC | Where-Object { -not $_.Name.StartsWith($env:DEV_STEM) })
-          foreach ($fg in $foreign) {
-            Write-Host ("WARNING: '" + $fg.Name + "' does not belong to the dev agent - it will be imported into prod unchanged.")
-          }
-          # An EMPTY map is legitimate: in this solution format component identity is
-          # carried by SCHEMA NAMES, not GUIDs. Guard on components instead.
-          $devUnits = @(Get-ChildItem 'work/dev/bots' -Directory -ErrorAction SilentlyContinue).Count +
-                      @(Get-ChildItem 'work/dev/botcomponents' -Directory -ErrorAction SilentlyContinue).Count
-          if ($devUnits -eq 0) {
-            Write-Error ("ABORT: no agent components found under work/dev. Is the agent inside solution '" +
-                         $env:DEV_SOLUTION + "'? Check the structure report above.")
-          }
           if ($map.Count -eq 0) {
-            Write-Host "NOTE: identity map is empty - expected here. Identity is carried by schema names, so the stem rewrite does the work."
+            Write-Error "ABORT: identity map is empty - no GUIDs found under work/dev. Paste the structure report above."
           }
-          $out = [ordered]@{}
-          foreach ($k in @($map.Keys | Sort-Object)) { $out[[string]$k] = [string]$map[$k] }
-          $out | ConvertTo-Json | Set-Content $env:MAP_FILE
+          $map | ConvertTo-Json | Set-Content $env:MAP_FILE
 
           # ---- order-independent two-phase replacement ----
           $ph = @{}
@@ -273,43 +236,13 @@ jobs:
               $c = [System.IO.File]::ReadAllText($f.FullName)
               foreach ($k in @($ph.Keys)) { $c = $c -ireplace [regex]::Escape($k), $ph[$k] }
               $c = $c.Replace($env:DEV_STEM, $env:PROD_STEM)
-              # Solution-name swap ONLY inside Other/ (solution metadata).
-              # Doing it globally corrupts unrelated identifiers that merely
-              # CONTAIN the solution name, e.g. pdvdev_ContosoAgentDev.
-              if ($rel.Replace('\','/').StartsWith('Other/')) {
-                $c = $c.Replace($env:DEV_SOLUTION, $env:PROD_SOLUTION)
-              }
+              $c = $c.Replace($env:DEV_SOLUTION, $env:PROD_SOLUTION)
               foreach ($k in @($ph.Keys)) { $c = $c.Replace($ph[$k], $map[$k]) }
               [System.IO.File]::WriteAllText($t, $c, $utf8)
             } else {
               Copy-Item $f.FullName $t -Force
             }
           }
-
-          # ---- keep PROD's solution identity: unique name, display name, publisher ----
-          $stageSol = 'stage/Other/Solution.xml'
-          $prodSol  = 'work/prod/Other/Solution.xml'
-          if ((Test-Path $stageSol) -and (Test-Path $prodSol)) {
-            $s = [System.IO.File]::ReadAllText($stageSol)
-            $pr = [System.IO.File]::ReadAllText($prodSol)
-            foreach ($blk in @('UniqueName','LocalizedNames','Descriptions','Publisher')) {
-              $m = [regex]::Match($pr, ('<' + $blk + '[ >].*?</' + $blk + '>'), 'Singleline')
-              if (-not $m.Success) { $m = [regex]::Match($pr, ('<' + $blk + '>.*?</' + $blk + '>'), 'Singleline') }
-              if ($m.Success) {
-                $val = $m.Value
-                $s = [regex]::Replace($s, ('<' + $blk + '[ >].*?</' + $blk + '>'), { param($x) $val }, 'Singleline')
-                Write-Host ("Preserved prod solution <" + $blk + ">")
-              }
-            }
-            [System.IO.File]::WriteAllText($stageSol, $s, $utf8)
-          }
-
-          # ---- show the bot metadata so display-name fields can be verified ----
-          Write-Host ""
-          Write-Host "---- staged bot metadata (first 45 lines) ----"
-          $bx = @(Get-ChildItem 'stage/bots' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ieq '.xml' })
-          if ($bx.Count -gt 0) { Get-Content $bx[0].FullName -TotalCount 45 }
-          Write-Host ""
 
           # ---- safety gate over every text file ----
           $textFiles = @(Get-ChildItem stage -Recurse -File | Where-Object { IsTextFile $_ })
@@ -321,7 +254,6 @@ jobs:
             $c = [System.IO.File]::ReadAllText($f.FullName)
             if ($c -match [regex]::Escape($env:DEV_STEM)) { $problems += ("STEM leak in: " + $f.FullName) }
             foreach ($k in @($map.Keys)) {
-              if ($map[$k] -ieq $k) { continue }   # self-mapping: nothing was meant to change
               if ($c -imatch [regex]::Escape($k)) { $problems += ("GUID " + $k + " leaked in: " + $f.FullName) }
             }
           }
