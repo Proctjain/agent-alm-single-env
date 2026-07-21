@@ -235,6 +235,10 @@ jobs:
           if ($devBC.Count -ne $prodBC.Count) {
             Write-Host ("NOTE: dev has {0} component folders, prod has {1}. Extra dev components will be created in prod." -f $devBC.Count, $prodBC.Count)
           }
+          $collide = @($devBC | Where-Object { $_.Name -like ("*" + $env:DEV_SOLUTION + "*") })
+          foreach ($cl in $collide) {
+            Write-Host ("NOTE: component '" + $cl.Name + "' contains the solution name - solution-name rewrite is scoped to Other/ so it is safe.")
+          }
           $foreign = @($devBC | Where-Object { -not $_.Name.StartsWith($env:DEV_STEM) })
           foreach ($fg in $foreign) {
             Write-Host ("WARNING: '" + $fg.Name + "' does not belong to the dev agent - it will be imported into prod unchanged.")
@@ -269,7 +273,12 @@ jobs:
               $c = [System.IO.File]::ReadAllText($f.FullName)
               foreach ($k in @($ph.Keys)) { $c = $c -ireplace [regex]::Escape($k), $ph[$k] }
               $c = $c.Replace($env:DEV_STEM, $env:PROD_STEM)
-              $c = $c.Replace($env:DEV_SOLUTION, $env:PROD_SOLUTION)
+              # Solution-name swap ONLY inside Other/ (solution metadata).
+              # Doing it globally corrupts unrelated identifiers that merely
+              # CONTAIN the solution name, e.g. pdvdev_ContosoAgentDev.
+              if ($rel.Replace('\','/').StartsWith('Other/')) {
+                $c = $c.Replace($env:DEV_SOLUTION, $env:PROD_SOLUTION)
+              }
               foreach ($k in @($ph.Keys)) { $c = $c.Replace($ph[$k], $map[$k]) }
               [System.IO.File]::WriteAllText($t, $c, $utf8)
             } else {
