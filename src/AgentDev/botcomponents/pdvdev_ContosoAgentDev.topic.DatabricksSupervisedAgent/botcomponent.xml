@@ -1,0 +1,11 @@
+<botcomponent schemaname="pdvdev_ContosoAgentDev.topic.DatabricksSupervisedAgent">
+  <componenttype>9</componenttype>
+  <description>Databricks-hosted MCP server exposing the supervisor agent (mas-930a026b-endpoint). Use this to ask questions the supervisor agent can answer</description>
+  <iscustomizable>0</iscustomizable>
+  <name>Databricks Supervised Agent</name>
+  <parentbotid>
+    <schemaname>pdvdev_ContosoAgentDev</schemaname>
+  </parentbotid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</botcomponent>
