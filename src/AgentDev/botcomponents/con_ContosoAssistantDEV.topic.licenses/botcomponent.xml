@@ -1,0 +1,10 @@
+<botcomponent schemaname="con_ContosoAssistantDEV.topic.licenses">
+  <componenttype>9</componenttype>
+  <iscustomizable>0</iscustomizable>
+  <name>licenses</name>
+  <parentbotid>
+    <schemaname>con_ContosoAssistantDEV</schemaname>
+  </parentbotid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</botcomponent>

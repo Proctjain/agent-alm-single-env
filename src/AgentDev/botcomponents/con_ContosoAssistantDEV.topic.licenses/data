@@ -1,0 +1,13 @@
+kind: AdaptiveDialog
+modelDescription: license
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SendActivity
+      id: sendActivity_MvDdnF
+      activity: Different licenses
+
+inputType: {}
+outputType: {}
