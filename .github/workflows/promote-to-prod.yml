@@ -26,7 +26,7 @@ on:
       prod_stem:
         description: "Prod agent schema name"
         required: true
-        default: con_ContosoAssistantDEV          # <<< EDIT 4: PROD agent schema name
+        default: con_ContosoAssistant          # <<< EDIT 4: PROD agent schema name
       prod_bot_id:
         description: "Prod agent Bot ID (GUID)"
         required: true
