@@ -179,8 +179,14 @@ jobs:
           # ---- load persistent map, then extend it by folder correspondence ----
           $map = @{}
           if (Test-Path $env:MAP_FILE) {
-            (Get-Content $env:MAP_FILE -Raw | ConvertFrom-Json).psobject.Properties |
-              ForEach-Object { $map[$_.Name] = $_.Value }
+            $loaded = 0; $skipped = 0
+            foreach ($prop in @((Get-Content $env:MAP_FILE -Raw | ConvertFrom-Json).psobject.Properties)) {
+              $mk = [string]$prop.Name; $mv = [string]$prop.Value
+              if ($mk -match ('^' + $guidRx + '$') -and $mv -match ('^' + $guidRx + '$')) {
+                $map[$mk] = $mv; $loaded++
+              } else { $skipped++ }
+            }
+            Write-Host ("Loaded identity map: {0} valid entries, {1} invalid discarded." -f $loaded, $skipped)
           }
 
           $pairs = 0
@@ -204,13 +210,14 @@ jobs:
             }
 
             foreach ($u in $units) {
-              $devG  = GuidsIn $u.Dev
-              $prodG = GuidsIn $u.Prod
+              $devG  = @(GuidsIn $u.Dev)
+              $prodG = @(GuidsIn $u.Prod)
+              Write-Host ("  {0,-52} dev {1,3} guids / prod {2,3} guids" -f $u.Name, $devG.Count, $prodG.Count)
               for ($k = 0; $k -lt $devG.Count; $k++) {
-                $d = $devG[$k]
+                $d = [string]$devG[$k]
                 if ($map.ContainsKey($d)) { continue }
-                if ($k -lt $prodG.Count) { $map[$d] = $prodG[$k] }
-                else { $map[$d] = [guid]::NewGuid().ToString().ToLower() }
+                if ($k -lt $prodG.Count) { $map[$d] = [string]$prodG[$k] }
+                else { $map[$d] = [string]([guid]::NewGuid().ToString().ToLower()) }
                 $pairs++
               }
             }
@@ -219,7 +226,9 @@ jobs:
           if ($map.Count -eq 0) {
             Write-Error "ABORT: identity map is empty - no GUIDs found under work/dev. Paste the structure report above."
           }
-          $map | ConvertTo-Json | Set-Content $env:MAP_FILE
+          $out = [ordered]@{}
+          foreach ($k in @($map.Keys | Sort-Object)) { $out[[string]$k] = [string]$map[$k] }
+          $out | ConvertTo-Json | Set-Content $env:MAP_FILE
 
           # ---- order-independent two-phase replacement ----
           $ph = @{}
