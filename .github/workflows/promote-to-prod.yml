@@ -239,8 +239,16 @@ jobs:
           foreach ($fg in $foreign) {
             Write-Host ("WARNING: '" + $fg.Name + "' does not belong to the dev agent - it will be imported into prod unchanged.")
           }
+          # An EMPTY map is legitimate: in this solution format component identity is
+          # carried by SCHEMA NAMES, not GUIDs. Guard on components instead.
+          $devUnits = @(Get-ChildItem 'work/dev/bots' -Directory -ErrorAction SilentlyContinue).Count +
+                      @(Get-ChildItem 'work/dev/botcomponents' -Directory -ErrorAction SilentlyContinue).Count
+          if ($devUnits -eq 0) {
+            Write-Error ("ABORT: no agent components found under work/dev. Is the agent inside solution '" +
+                         $env:DEV_SOLUTION + "'? Check the structure report above.")
+          }
           if ($map.Count -eq 0) {
-            Write-Error "ABORT: identity map is empty - no GUIDs found under work/dev. Paste the structure report above."
+            Write-Host "NOTE: identity map is empty - expected here. Identity is carried by schema names, so the stem rewrite does the work."
           }
           $out = [ordered]@{}
           foreach ($k in @($map.Keys | Sort-Object)) { $out[[string]$k] = [string]$map[$k] }
