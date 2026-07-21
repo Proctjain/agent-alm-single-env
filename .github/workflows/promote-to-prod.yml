@@ -22,11 +22,11 @@ on:
       dev_stem:
         description: "Dev agent schema name"
         required: true
-        default: con_contosoassistantdev       # <<< EDIT 3: DEV agent schema name
+        default: con_ContosoAssistantDEV       # <<< EDIT 3: DEV agent schema name
       prod_stem:
         description: "Prod agent schema name"
         required: true
-        default: con_contosoassistant          # <<< EDIT 4: PROD agent schema name
+        default: con_ContosoAssistantDEV          # <<< EDIT 4: PROD agent schema name
       prod_bot_id:
         description: "Prod agent Bot ID (GUID)"
         required: true
