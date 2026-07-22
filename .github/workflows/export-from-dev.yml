@@ -13,7 +13,7 @@ on:
       solution_name:
         description: "Dev solution unique Name"
         required: true
-        default: AgentDev                      # <<< EDIT 1: your DEV solution Name
+        default: Test_dev                      # <<< EDIT 1: your DEV solution Name
 
 permissions:
   contents: write
