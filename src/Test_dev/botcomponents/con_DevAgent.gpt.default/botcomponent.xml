@@ -1,0 +1,10 @@
+<botcomponent schemaname="con_DevAgent.gpt.default">
+  <componenttype>15</componenttype>
+  <iscustomizable>0</iscustomizable>
+  <name>Dev Agent</name>
+  <parentbotid>
+    <schemaname>con_DevAgent</schemaname>
+  </parentbotid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</botcomponent>
