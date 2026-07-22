@@ -1,0 +1,13 @@
+kind: AdaptiveDialog
+modelDescription: Metrics
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SendActivity
+      id: sendActivity_VMHEb5
+      activity: Welcome to metrics section
+
+inputType: {}
+outputType: {}

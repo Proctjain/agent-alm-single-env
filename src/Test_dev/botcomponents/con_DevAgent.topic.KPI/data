@@ -1,0 +1,13 @@
+kind: AdaptiveDialog
+modelDescription: KPI
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SendActivity
+      id: sendActivity_f3nAXR
+      activity: KPI section
+
+inputType: {}
+outputType: {}
