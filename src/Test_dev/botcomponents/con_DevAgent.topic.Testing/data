@@ -1,0 +1,13 @@
+kind: AdaptiveDialog
+modelDescription: Testing
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SendActivity
+      id: sendActivity_uCMzpl
+      activity: Test case section
+
+inputType: {}
+outputType: {}
