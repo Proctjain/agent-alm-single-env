@@ -14,23 +14,23 @@ on:
       dev_solution:
         description: "Dev solution unique Name"
         required: true
-        default: AgentDev                      # <<< EDIT 1: DEV solution Name
+        default: Test_dev                      # <<< EDIT 1: DEV solution Name
       prod_solution:
         description: "Prod solution unique Name"
         required: true
-        default: AgentProd                     # <<< EDIT 2: PROD solution Name
+        default: Test_Prod                     # <<< EDIT 2: PROD solution Name
       dev_stem:
         description: "Dev agent schema name"
         required: true
-        default: con_ContosoAssistantDEV       # <<< EDIT 3: DEV agent schema name
+        default: con_DevAgent       # <<< EDIT 3: DEV agent schema name
       prod_stem:
         description: "Prod agent schema name"
         required: true
-        default: con_ContosoAssistant          # <<< EDIT 4: PROD agent schema name
+        default: con_ProdAgent          # <<< EDIT 4: PROD agent schema name
       prod_bot_id:
         description: "Prod agent Bot ID (GUID)"
         required: true
-        default: 33062c04-0384-f111-ab0f-7ced8daf5448   # <<< EDIT 5: PROD agent Bot ID
+        default: c1ad19ee-9985-f111-ab0f-7ced8daf5448   # <<< EDIT 5: PROD agent Bot ID
 
 permissions:
   contents: write
