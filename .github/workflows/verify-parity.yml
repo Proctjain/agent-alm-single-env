@@ -15,19 +15,19 @@ on:
       dev_solution:
         description: "Dev solution Name"
         required: true
-        default: AgentDev                      # <<< EDIT 1: DEV solution Name
+        default: Test_dev                      # <<< EDIT 1: DEV solution Name
       prod_solution:
         description: "Prod solution Name"
         required: true
-        default: AgentProd                     # <<< EDIT 2: PROD solution Name
+        default: Test_Prod                     # <<< EDIT 2: PROD solution Name
       dev_stem:
         description: "Dev agent schema name"
         required: true
-        default: con_ContosoAssistantDEV       # <<< EDIT 3: DEV agent schema name
+        default: con_DevAgent       # <<< EDIT 3: DEV agent schema name
       prod_stem:
         description: "Prod agent schema name"
         required: true
-        default: con_ContosoAssistant          # <<< EDIT 4: PROD agent schema name
+        default: con_ProdAgent          # <<< EDIT 4: PROD agent schema name
 
 jobs:
   verify:
