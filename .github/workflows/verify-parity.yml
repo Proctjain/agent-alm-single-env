@@ -99,6 +99,27 @@ jobs:
             } catch { return $false }
           }
 
+          # Platform-maintained fields. Dataverse stamps these on records; they
+          # differ between two records for reasons unrelated to agent content,
+          # so they are stripped from BOTH sides before comparing.
+          $ignoreFields = @(
+            'timezoneruleversionnumber','utcconversiontimezonecode','importsequencenumber',
+            'overriddencreatedon','versionnumber','createdon','modifiedon',
+            'createdby','modifiedby','createdonbehalfby','modifiedonbehalfby',
+            'solutionid','supportingsolutionid','componentstate','ismanaged','publishedon',
+            'organizationid','owningbusinessunit','owninguser','owningteam','ownerid',
+            'introducedversion','iscustomizable','overwritetime'
+          )
+
+          function StripVolatile($c) {
+            foreach ($fld in $script:ignoreFields) {
+              $c = [regex]::Replace($c, ('(?is)<' + $fld + '\b[^>]*>.*?</' + $fld + '>'), '')
+              $c = [regex]::Replace($c, ('(?is)<' + $fld + '\b[^>]*/>'), '')
+            }
+            $c = [regex]::Replace($c, '(?m)^[ \t]*\r?\n', '')   # drop blank lines left behind
+            return $c
+          }
+
           # Build a dictionary of relative-path -> normalized content.
           # 'Other/' is skipped: solution metadata legitimately differs.
           function Snapshot($root, $stem) {
@@ -114,6 +135,7 @@ jobs:
                 $c = [System.IO.File]::ReadAllText($f.FullName)
                 $c = $c.Replace($stem, 'AGENT')
                 $c = [regex]::Replace($c, $guidRx, 'GUID')
+                $c = StripVolatile $c
                 $c = $c -replace "`r`n", "`n"
                 $out[$rel] = $c.Trim()
               }
@@ -124,6 +146,7 @@ jobs:
           $dev  = Snapshot 'work/dev'  $env:DEV_STEM
           $prod = Snapshot 'work/prod' $env:PROD_STEM
           Write-Host ("Compared {0} dev files against {1} prod files." -f $dev.Count, $prod.Count)
+          Write-Host ("Ignoring {0} platform-maintained fields (timestamps, row versions, ownership)." -f $ignoreFields.Count)
           Write-Host ""
 
           $onlyDev  = @($dev.Keys  | Where-Object { -not $prod.ContainsKey($_) } | Sort-Object)
